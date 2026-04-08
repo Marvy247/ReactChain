@@ -45,43 +45,73 @@ const ABI = [
   },
 ] as const;
 
+const RPCS = [
+  'https://forno.celo.org',
+  'https://rpc.ankr.com/celo',
+  'https://celo.api.onfinality.io/public',
+];
+
 const account = privateKeyToAccount(PRIVATE_KEY);
-const publicClient = createPublicClient({ chain: celo, transport: http() });
-const walletClient = createWalletClient({ account, chain: celo, transport: http() });
+
+function makeClients(rpc: string) {
+  return {
+    publicClient: createPublicClient({ chain: celo, transport: http(rpc) }),
+    walletClient: createWalletClient({ account, chain: celo, transport: http(rpc) }),
+  };
+}
+
+async function withRetry<T>(fn: (rpc: string) => Promise<T>): Promise<T> {
+  for (const rpc of RPCS) {
+    try {
+      return await fn(rpc);
+    } catch (e: any) {
+      console.error(`  ⚠ RPC ${rpc} failed: ${e.shortMessage ?? e.message} — trying next...`);
+    }
+  }
+  throw new Error('All RPCs failed');
+}
 
 async function send(fn: 'contribute' | 'triggerPayout', value?: bigint) {
-  try {
-    const hash = await walletClient.writeContract({
-      address: CONTRACT, abi: ABI, functionName: fn,
-      args: [GROUP_ID],
-      ...(value ? { value } : {}),
-    });
-    console.log(`  ✅ ${fn}: https://explorer.celo.org/mainnet/tx/${hash}`);
-    return true;
-  } catch (e: any) {
-    console.error(`  ❌ ${fn}: ${e.shortMessage ?? e.message}`);
-    return false;
-  }
+  return withRetry(async (rpc) => {
+    const wc = makeClients(rpc).walletClient;
+    try {
+      const hash = await wc.writeContract({
+        address: CONTRACT, abi: ABI, functionName: fn,
+        args: [GROUP_ID],
+        ...(value ? { value } : {}),
+      });
+      console.log(`  ✅ ${fn}: https://explorer.celo.org/mainnet/tx/${hash}`);
+      return true;
+    } catch (e: any) {
+      console.error(`  ❌ ${fn}: ${e.shortMessage ?? e.message}`);
+      return false;
+    }
+  });
 }
 
 async function main() {
   console.log(`[${new Date().toISOString()}] Sender: ${account.address}`);
 
-  const group = await publicClient.readContract({ address: CONTRACT, abi: ABI, functionName: 'getGroup', args: [GROUP_ID] });
+  const group = await withRetry(async (rpc) => {
+    const pc = makeClients(rpc).publicClient;
+    return pc.readContract({ address: CONTRACT, abi: ABI, functionName: 'getGroup', args: [GROUP_ID] });
+  });
+
   const [,, , cycleDuration, cycleStart, currentCycle] = group;
   const cycleOver = BigInt(Math.floor(Date.now() / 1000)) >= cycleStart + cycleDuration;
-
   console.log(`  Cycle ${currentCycle} | cycleOver: ${cycleOver}`);
 
   if (cycleOver) {
-    // Trigger payout to advance cycle
     await send('triggerPayout');
+    await new Promise(r => setTimeout(r, 4000)); // wait for payout tx to land
   }
 
-  // Contribute to current (or new) cycle
-  const already = await publicClient.readContract({
-    address: CONTRACT, abi: ABI, functionName: 'hasContributed',
-    args: [GROUP_ID, currentCycle + (cycleOver ? 1n : 0n), account.address],
+  const already = await withRetry(async (rpc) => {
+    const pc = makeClients(rpc).publicClient;
+    return pc.readContract({
+      address: CONTRACT, abi: ABI, functionName: 'hasContributed',
+      args: [GROUP_ID, currentCycle + (cycleOver ? 1n : 0n), account.address],
+    });
   });
 
   if (!already) {
