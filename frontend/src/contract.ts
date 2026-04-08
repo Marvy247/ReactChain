@@ -1,6 +1,6 @@
 // Deployed Stokvel contract address on Celo mainnet
 // Update this after deployment
-export const STOKVEL_ADDRESS = '0x0000000000000000000000000000000000000000' as `0x${string}`;
+export const STOKVEL_ADDRESS = '0xd8b4875b61130D651409d26C47D49f57BEbC1780' as `0x${string}`;
 
 export const STOKVEL_ABI = [
   {
