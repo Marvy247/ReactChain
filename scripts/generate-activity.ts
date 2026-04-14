@@ -27,7 +27,7 @@ const accounts = existsSync(walletsPath)
       const { mnemonic, wallets } = JSON.parse(readFileSync(walletsPath, 'utf8'));
       return wallets.map(({ index }: { index: number }) => mnemonicToAccount(mnemonic, { accountIndex: index }));
     })()
-  : [privateKeyToAccount(FUNDER_KEY)]; // fallback to single wallet
+  : [privateKeyToAccount(FUNDER_KEY)];
 
 const CONTRACT = '0x076D775b1d0365527ebE730222b718bc2E9f3EB6' as `0x${string}`;
 const GROUP_ID = 0n;
@@ -62,7 +62,8 @@ async function withRetry<T>(fn: (rpc: string) => Promise<T>): Promise<T> {
   throw new Error('All RPCs failed');
 }
 
-// Pick which wallet to use this run (rotate by minute)
+// Admin wallet (funder) handles payouts; sub-wallets only contribute
+const adminAccount = privateKeyToAccount(FUNDER_KEY);
 const walletIndex = Math.floor(Date.now() / 1000 / 60) % accounts.length;
 const account = accounts[walletIndex] as HDAccount;
 
@@ -81,8 +82,10 @@ async function main() {
   const wc = createWalletClient({ account, chain: celo, transport: http(RPCS[0]) });
 
   if (cycleOver) {
+    // Only admin can trigger payout
+    const adminWc = createWalletClient({ account: adminAccount, chain: celo, transport: http(RPCS[0]) });
     try {
-      const hash = await wc.writeContract({ address: CONTRACT, abi: ABI, functionName: 'triggerPayout', args: [GROUP_ID] });
+      const hash = await adminWc.writeContract({ address: CONTRACT, abi: ABI, functionName: 'triggerPayout', args: [GROUP_ID] });
       console.log(`  ✅ triggerPayout: https://explorer.celo.org/mainnet/tx/${hash}`);
     } catch (e: any) { console.error(`  ❌ triggerPayout: ${e.shortMessage ?? e.message}`); }
     await new Promise(r => setTimeout(r, 4000));

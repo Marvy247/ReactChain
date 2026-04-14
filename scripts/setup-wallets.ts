@@ -23,8 +23,8 @@ if (!match) { console.error('PRIVATE_KEY not found'); process.exit(1); }
 const FUNDER_KEY = match[1].trim() as `0x${string}`;
 const CONTRACT = '0x076D775b1d0365527ebE730222b718bc2E9f3EB6' as `0x${string}`;
 const GROUP_ID = 0n;
-const FUND_AMOUNT = parseEther('0.3');
-const NUM_WALLETS = 5;
+const FUND_AMOUNT = parseEther('0.2');
+const NUM_WALLETS = 50;
 
 const JOIN_ABI = [{
   name: 'joinGroup', type: 'function', stateMutability: 'nonpayable',
