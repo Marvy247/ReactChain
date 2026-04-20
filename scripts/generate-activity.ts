@@ -30,7 +30,7 @@ const accounts = existsSync(walletsPath)
   : [privateKeyToAccount(FUNDER_KEY)];
 
 const CONTRACT = '0x076D775b1d0365527ebE730222b718bc2E9f3EB6' as `0x${string}`;
-const GROUP_ID = 0n;
+const GROUP_IDS = [0n, 1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 9n, 10n];
 const AMOUNT = parseEther('0.01');
 
 const RPCS = ['https://forno.celo.org', 'https://rpc.ankr.com/celo'];
@@ -70,40 +70,52 @@ const account = accounts[walletIndex] as HDAccount;
 async function main() {
   console.log(`[${new Date().toISOString()}] Wallet [${walletIndex}]: ${account.address}`);
 
-  const group = await withRetry(rpc =>
-    createPublicClient({ chain: celo, transport: http(rpc) })
-      .readContract({ address: CONTRACT, abi: ABI, functionName: 'getGroup', args: [GROUP_ID] })
-  );
-
-  const [,, , cycleDuration, cycleStart, currentCycle] = group;
-  const cycleOver = BigInt(Math.floor(Date.now() / 1000)) >= cycleStart + cycleDuration;
-  console.log(`  Cycle ${currentCycle} | cycleOver: ${cycleOver}`);
-
   const wc = createWalletClient({ account, chain: celo, transport: http(RPCS[0]) });
+  const adminWc = createWalletClient({ account: adminAccount, chain: celo, transport: http(RPCS[0]) });
+  const pc = createPublicClient({ chain: celo, transport: http(RPCS[0]) });
 
-  if (cycleOver) {
-    // Only admin can trigger payout
-    const adminWc = createWalletClient({ account: adminAccount, chain: celo, transport: http(RPCS[0]) });
-    try {
-      const hash = await adminWc.writeContract({ address: CONTRACT, abi: ABI, functionName: 'triggerPayout', args: [GROUP_ID] });
-      console.log(`  ✅ triggerPayout: https://explorer.celo.org/mainnet/tx/${hash}`);
-    } catch (e: any) { console.error(`  ❌ triggerPayout: ${e.shortMessage ?? e.message}`); }
-    await new Promise(r => setTimeout(r, 4000));
+  // Check balance upfront — skip if not enough for at least 1 group
+  const balance = await pc.getBalance({ address: account.address });
+  const minRequired = parseEther('0.015'); // 0.01 contribution + gas
+  if (balance < minRequired) {
+    console.log(`  ⚠️  Low balance (${Number(balance) / 1e18} CELO) — skipping`);
+    return;
   }
 
-  const already = await withRetry(rpc =>
-    createPublicClient({ chain: celo, transport: http(rpc) })
-      .readContract({ address: CONTRACT, abi: ABI, functionName: 'hasContributed',
-        args: [GROUP_ID, currentCycle + (cycleOver ? 1n : 0n), account.address] })
-  );
+  // How many groups can this wallet afford this run
+  const maxGroups = Math.min(GROUP_IDS.length, Math.floor(Number(balance) / Number(parseEther('0.012'))));
 
-  if (!already) {
-    try {
-      const hash = await wc.writeContract({ address: CONTRACT, abi: ABI, functionName: 'contribute', args: [GROUP_ID], value: AMOUNT });
-      console.log(`  ✅ contribute: https://explorer.celo.org/mainnet/tx/${hash}`);
-    } catch (e: any) { console.error(`  ❌ contribute: ${e.shortMessage ?? e.message}`); }
-  } else {
-    console.log(`  ℹ️  Already contributed this cycle`);
+  for (const GROUP_ID of GROUP_IDS.slice(0, maxGroups)) {
+    const group = await withRetry(rpc =>
+      createPublicClient({ chain: celo, transport: http(rpc) })
+        .readContract({ address: CONTRACT, abi: ABI, functionName: 'getGroup', args: [GROUP_ID] })
+    ).catch(() => null);
+    if (!group) continue;
+
+    const [,, , cycleDuration, cycleStart, currentCycle] = group;
+    const cycleOver = BigInt(Math.floor(Date.now() / 1000)) >= cycleStart + cycleDuration;
+
+    if (cycleOver) {
+      try {
+        const hash = await adminWc.writeContract({ address: CONTRACT, abi: ABI, functionName: 'triggerPayout', args: [GROUP_ID] });
+        console.log(`  ✅ [group ${GROUP_ID}] triggerPayout: ${hash.slice(0, 20)}...`);
+        await new Promise(r => setTimeout(r, 3000));
+      } catch (e: any) { /* cycle not over or already paid */ }
+    }
+
+    const already = await withRetry(rpc =>
+      createPublicClient({ chain: celo, transport: http(rpc) })
+        .readContract({ address: CONTRACT, abi: ABI, functionName: 'hasContributed',
+          args: [GROUP_ID, currentCycle + (cycleOver ? 1n : 0n), account.address] })
+    ).catch(() => true);
+
+    if (!already) {
+      try {
+        const hash = await wc.writeContract({ address: CONTRACT, abi: ABI, functionName: 'contribute', args: [GROUP_ID], value: AMOUNT });
+        console.log(`  ✅ [group ${GROUP_ID}] contribute: ${hash.slice(0, 20)}...`);
+        await new Promise(r => setTimeout(r, 2000));
+      } catch (e: any) { console.error(`  ❌ [group ${GROUP_ID}]: ${e.shortMessage?.split('\n')[0]}`); }
+    }
   }
 }
 
